@@ -1,0 +1,2 @@
+# Customer spending definition
+For this teaching dataset, gross successful payment amount means the sum of payments with payment_status = 'paid' for non-cancelled orders. Net payment amount subtracts refunded payment amounts from that gross amount. State clearly which metric is used. Join customers to orders using customer_id and orders to payments using order_id. Avoid joining order_items into the same aggregation unless needed, because one-to-many joins can duplicate payment amounts.

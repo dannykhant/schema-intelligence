@@ -1,0 +1,2 @@
+# Revenue definition
+Revenue is not automatically equivalent to order value or current product prices. For this dataset, use payment records as the source of cash payment information. Gross successful payments include records marked paid. Net payments subtract records marked refunded. Pending and failed payments are not successful revenue. Exclude cancelled orders for the standard sales analysis unless the question explicitly asks otherwise.

@@ -1,0 +1,2 @@
+# Primary and foreign key conventions
+Each table has a single integer-like primary key. Foreign keys connect orders.customer_id to customers.customer_id; order_items.order_id to orders.order_id; order_items.product_id to products.product_id; products.category_id to categories.category_id; and payments.order_id to orders.order_id. The database catalog is the authoritative source for actual constraints.
