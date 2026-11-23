@@ -1,0 +1,358 @@
+{
+  "transcripts": "/Users/dannykhant/Code/cmkl/assignments/schema-intelligence-agent/evaluation/transcripts.json",
+  "cosine_min": 0.45,
+  "summary": {
+    "incorrect": 3,
+    "correct": 5
+  },
+  "results": [
+    {
+      "question": "A1",
+      "calls": 1,
+      "answer": "\n\nThe **payments** table has the following schema:\n\n| Column | Data Type | Nullable | Constraints |\n|--------|-----------|----------|-------------|\n| `payment_id` | bigint | NO | PRIMARY KEY |\n| `order_id` | bigint | NO | FOREIGN KEY \u2192 `orders(order_id)` |\n| `payment_date` | timestamp without time zone | NO | |\n| `amount` | numeric | NO | |\n| `payment_status` | character varying | NO | |\n\n**Summary of your questions:**\n\n- **Is `amount` nullable?** No, `amount` is defined as `NOT NULL`.\n- **What `payment_status` values are allowed?** The schema does not specify any CHECK constraints or domain restrictions on `payment_status`. It's a text column (`character varying`) with no explicit constraints shown in the table definition.\n\nThe database doesn't show a CHECK constraint that would limit `payment_status` to a predefined list (like 'completed', 'pending', etc.). Business rules for allowed status values would need to be found in the documentation or enforced at the application level.\n\nWould you like me to search the documentation for business rules about payment statuses?",
+      "verdict": "incorrect",
+      "basis": "keyword check",
+      "flags": [
+        "missing: paid; failed; refunded"
+      ],
+      "cosine": 0.785,
+      "sql_check": null,
+      "keywords": {
+        "available": true,
+        "passed": false,
+        "missing": [
+          "paid",
+          "failed",
+          "refunded"
+        ],
+        "violated": []
+      }
+    },
+    {
+      "question": "A2",
+      "calls": 5,
+      "answer": "\n\n## Tables & Columns Referencing Orders\n\n**1. `order_items`**\n| Column | FK Reference |\n|--------|-------------|\n| `order_id` | `orders.order_id` |\n\n**2. `payments`**\n| Column | FK Reference |\n|--------|-------------|\n| `order_id` | `orders.order_id` |\n\n---\n\n## What to Handle Before Deleting an Order\n\n### 1. **Foreign Key Deletion Handling**\n\nYou have two options for the data integrity approach:\n\n**A. CASCADE DELETE (transitional approach)**\n```sql\n-- Option 1: Chain cascades to ensure everything deletes automatically\nALTER TABLE order_items \n  DROP CONSTRAINT order_items_order_id_fkey CASCADE;\nALTER TABLE payments \n  DROP CONSTRAINT payments_order_id_fkey CASCADE;\n```\n*Simplest but dirty - removes all associated item/payment records.*\n\n**B. Soft delete / Nullify (safer approach)**\n```sql\n-- Option 2: Nullify parents' FKs\nUPDATE order_items \nSET order_id = NULL \nWHERE order_id = TARGET_ORDER_ID;\n\nUPDATE payments \nSET order_id = NULL \nWHERE order_id = TARGET_ORDER_ID;\n```\n*Keeps audit/history data.*\n\n### 2. **Business Rules to Validate**\n\n| Check | Why |\n|-------|-----|\n| \u2705 Validate `payments` are none/paid before force-delete | [Sales calc docs](business_rules/sales_calculation.md) say exclude cancelled/failed orders from standard analysis |\n| \u2705 Check `order_items` have been processed (e.g., inventory deducted) | Items are direct order dependents |\n| \u26a0\ufe0f No soft-delete convention found | No discovered rule for soft-deleting orders |\n\n### 3. **No Referential Integrity from Orders (Chains)**\n\nOrders reference:\n- `customers.customer_id` (FK in orders)\n- No orphaned records in `orders` itself depends on other tables\n\n---\n\n### 4. **Recommended DELETE Endpoint Pattern**\n\n```sql\n-- Pre-delete validation\nSELECT \n  COUNT(*) as items_count,\n  COUNT(p.payment_id) as payments_count\nFROM order_items\nJOIN payments \n  ON order_items.order_id = payments.order_id\nWHERE order_items.order_id = $order_id\nGROUP BY order_items.order_id\nHAVING COUNT(p.payment_id) > 0;  -- Has unprocessed payments\n```\n\n**Recommended approach:**\n1. Force-delete via `CASCADE` if you want a hard delete\n2. Or nullify parents + soft-delegate business validation to the application layer\n\nWould you like me to validate a specific DELETE query structure?",
+      "verdict": "incorrect",
+      "basis": "keyword check",
+      "flags": [
+        "missing: no cascade / not cascade / no on delete cascade / without cascade"
+      ],
+      "cosine": 0.844,
+      "sql_check": null,
+      "keywords": {
+        "available": true,
+        "passed": false,
+        "missing": [
+          "no cascade / not cascade / no on delete cascade / without cascade"
+        ],
+        "violated": []
+      }
+    },
+    {
+      "question": "A3",
+      "calls": 2,
+      "answer": "\n\n**No, `order_items.unit_price_at_purchase` is NOT NULL.** It has `\"is_nullable\": \"NO\"` at the database level, so NULLs will **not** be a problem for your SUM query.\n\n**Key points:**\n- The column is defined with `NOT NULL` constraint, so every row has a value\n- No need for `COALESCE` or `IFNULL`\n- The data semantics confirm this is the historical price at time of purchase, which is the correct field for revenue calculations\n\n**For your revenue report, the typical pattern would be:**\n\n```sql\nSELECT ORDER_ID,\n       SUM(quantity * unit_price_at_purchase) AS total_revenue\nFROM order_items\nGROUP BY ORDER_ID;\n```\n\nNo special handling for NULLs required.",
+      "verdict": "correct",
+      "basis": "keyword check",
+      "flags": [],
+      "cosine": 0.795,
+      "sql_check": null,
+      "keywords": {
+        "available": true,
+        "passed": true,
+        "missing": [],
+        "violated": []
+      }
+    },
+    {
+      "question": "B1",
+      "calls": 3,
+      "answer": "\n\n## Order History Query\n\n```sql\nWITH order_totals AS (\n    SELECT \n        order_id,\n        SUM(quantity * unit_price_at_purchase) AS total_item_value\n    FROM order_items\n    GROUP BY order_id\n)\nSELECT \n    o.order_id,\n    o.order_date,\n    o.status,\n    ot.total_item_value,\n    SUM(p.amount) AS total_payment_amount\nFROM orders o\nLEFT JOIN order_totals ot ON o.order_id = ot.order_id\nLEFT JOIN payments p ON o.order_id = p.order_id\nGROUP BY o.order_id, o.order_date, o.status, ot.total_item_value\nORDER BY o.order_id;\n```\n\n### Explanation\n\n**Key design decisions:**\n\n1. **Total item value is calculated in a CTE** (`order_totals`) before joining. This aggregates `quantity \u00d7 unit_price_at_purchase` per order once, ensuring no duplication.\n\n2. **Payments are aggregated separately** using `SUM(p.amount)`. Since an order can have multiple payment rows, using `SUM` in the GROUP BY ensures all amounts are combined correctly.\n\n3. **Left joins** allow orders without items or payments to still appear in the results.\n\n4. The **grouping is on the order level only**, so each row represents one distinct order with its single total item value.\n\nIf you need different variations (e.g., with order totals only without payments, or with order status filtering), I can adjust the query.",
+      "verdict": "correct",
+      "basis": "sql result comparison",
+      "flags": [],
+      "cosine": 0.849,
+      "sql_check": {
+        "available": true,
+        "passed": true,
+        "reason": "result rows match ground truth",
+        "attempts": [
+          {
+            "sql": "WITH order_totals AS (\n    SELECT \n        order_id,\n        SUM(quantity * unit_price_at_purchase) AS total_item_value\n    FROM order_items\n    GROUP BY order_id\n)\nSELECT \n    o.order_id,\n    o.order_date,\n    o.status,\n    ot.total_item_value,\n    SUM(p.amount) AS total_payment_amount\nFROM orders ",
+            "row_count": 12,
+            "matched": true,
+            "detail": {
+              "actual": [
+                [
+                  1,
+                  154.99
+                ],
+                [
+                  2,
+                  139.0
+                ],
+                [
+                  3,
+                  99.0
+                ],
+                [
+                  4,
+                  89.99
+                ],
+                [
+                  5,
+                  75.0
+                ],
+                [
+                  6,
+                  42.0
+                ],
+                [
+                  7,
+                  83.5
+                ],
+                [
+                  8,
+                  50.0
+                ],
+                [
+                  9,
+                  129.0
+                ],
+                [
+                  10,
+                  25.0
+                ],
+                [
+                  11,
+                  120.0
+                ],
+                [
+                  12,
+                  183.0
+                ]
+              ],
+              "expected": [
+                [
+                  1,
+                  154.99
+                ],
+                [
+                  2,
+                  139.0
+                ],
+                [
+                  3,
+                  99.0
+                ],
+                [
+                  4,
+                  89.99
+                ],
+                [
+                  5,
+                  75.0
+                ],
+                [
+                  6,
+                  42.0
+                ],
+                [
+                  7,
+                  83.5
+                ],
+                [
+                  8,
+                  50.0
+                ],
+                [
+                  9,
+                  129.0
+                ],
+                [
+                  10,
+                  25.0
+                ],
+                [
+                  11,
+                  120.0
+                ],
+                [
+                  12,
+                  183.0
+                ]
+              ]
+            }
+          }
+        ]
+      },
+      "keywords": {
+        "available": false,
+        "passed": true,
+        "missing": [],
+        "violated": []
+      }
+    },
+    {
+      "question": "B2",
+      "calls": 2,
+      "answer": "\n\nHere's the query to find customers who have never placed an order:\n\n```sql\nSELECT c.customer_id, c.full_name, c.email\nFROM customers c\nLEFT JOIN orders o ON c.customer_id = o.customer_id\nWHERE o.customer_id IS NULL\n```\n\n**How it works:**\n- The `LEFT JOIN` finds all customers and matches them with their orders\n- The `WHERE o.customer_id IS NULL` filters to only customers with no matching order in the orders table\n- This returns `customer_id`, `full_name`, and `email` for those customers\n\nThe PostgreSQL plan shows an efficient **Hash Right Anti Join**, which efficiently identifies customers without orders with minimal cost.",
+      "verdict": "correct",
+      "basis": "sql result comparison",
+      "flags": [],
+      "cosine": 0.787,
+      "sql_check": {
+        "available": true,
+        "passed": true,
+        "reason": "result rows match ground truth",
+        "attempts": [
+          {
+            "sql": "SELECT c.customer_id, c.full_name, c.email\nFROM customers c\nLEFT JOIN orders o ON c.customer_id = o.customer_id\nWHERE o.customer_id IS NULL",
+            "row_count": 0,
+            "matched": true,
+            "detail": {
+              "actual": [],
+              "expected": []
+            }
+          }
+        ]
+      },
+      "keywords": {
+        "available": false,
+        "passed": true,
+        "missing": [],
+        "violated": []
+      }
+    },
+    {
+      "question": "B3",
+      "calls": 2,
+      "answer": "\n\n## Keyset-Pagination Query for Orders\n\n```sql\nSELECT *\nFROM orders\nWHERE order_date > '2026-10-07' \n   OR (order_date = '2026-10-07' AND order_id > 3)\nORDER BY order_date DESC, order_id DESC\nLIMIT 5;\n```\n\n### How it works:\n\n| Condition | Logic |\n|-----------|-------|\n| `order_date > '2026-10-07'` | All orders after the cursor's date (newer dates) |\n| `order_date = '2026-10-07' AND order_id > 3` | Orders on the same date but after the cursor's row |\n\n### Ordering (newest first):\n- **Primary**: `order_date DESC` \u2014 latest dates first\n- **Tiebreaker**: `order_id DESC` \u2014 ensures stable, reproducible ordering within the same date\n\nThis matches the cursor at `(2026-10-07, 3)` and returns the 5 subsequent orders in descending order, exactly as requested. The query is validated and the plan shows efficient index-seeking on `order_date`.",
+      "verdict": "incorrect",
+      "basis": "sql result comparison",
+      "flags": [],
+      "cosine": 0.76,
+      "sql_check": {
+        "available": true,
+        "passed": false,
+        "reason": "no SQL block produced the expected rows",
+        "attempts": [
+          {
+            "sql": "SELECT *\nFROM orders\nWHERE order_date > '2026-10-07' \n   OR (order_date = '2026-10-07' AND order_id > 3)\nORDER BY order_date DESC, order_id DESC\nLIMIT 5;",
+            "row_count": 5,
+            "matched": false,
+            "detail": {
+              "actual": [
+                [
+                  12,
+                  "2026-11-13"
+                ],
+                [
+                  8,
+                  "2026-11-11"
+                ],
+                [
+                  4,
+                  "2026-11-08"
+                ],
+                [
+                  2,
+                  "2026-11-06"
+                ],
+                [
+                  10,
+                  "2026-11-04"
+                ]
+              ],
+              "expected": [
+                [
+                  11,
+                  "2026-09-17"
+                ],
+                [
+                  6,
+                  "2026-04-30"
+                ],
+                [
+                  9,
+                  "2026-01-20"
+                ]
+              ]
+            }
+          }
+        ]
+      },
+      "keywords": {
+        "available": false,
+        "passed": true,
+        "missing": [],
+        "violated": []
+      }
+    },
+    {
+      "question": "C1",
+      "calls": 2,
+      "answer": "\n\nThe query returns duplicates because you're joining a **one-to-many relationship** (orders \u2192 payments) with **another one-to-many relationship** (orders \u2192 order_items). This creates a Cartesian product: if an order has 3 items and 2 payments, you get 3 \u00d7 2 = 6 rows.\n\nThe `order_items` join is not needed for your goal of getting the payment amount per order.\n\n## Fix\n\nRemove the unnecessary `order_items` join and use `DISTINCT` to deduplicate:\n\n```sql\nSELECT DISTINCT o.order_id, p.amount \nFROM orders o \nJOIN payments p ON p.order_id = o.order_id \nWHERE o.customer_id = 1;\n```\n\nOr, if you need to aggregate payments (e.g., total paid vs total amount) and want to keep the results aggregated per order:\n\n```sql\nSELECT o.order_id, SUM(p.amount) AS total_paid\nFROM orders o \nJOIN payments p ON p.order_id = o.order_id \nWHERE o.customer_id = 1\nGROUP BY o.order_id;\n```\n\n**Why this works:**\n- `orders` \u2192 `payments`: one order can have multiple payment records (partial payments, multiple credit cards, etc.)\n- `orders` \u2192 `order_items`: one order can have multiple products\n- Joining both creates `N_items \u00d7 N_payments` duplicate combinations\n\nThe `order_items` table isn't needed to retrieve payment amounts.",
+      "verdict": "correct",
+      "basis": "sql result comparison",
+      "flags": [],
+      "cosine": 0.829,
+      "sql_check": {
+        "available": true,
+        "passed": true,
+        "reason": "result rows match ground truth",
+        "attempts": [
+          {
+            "sql": "SELECT DISTINCT o.order_id, p.amount \nFROM orders o \nJOIN payments p ON p.order_id = o.order_id \nWHERE o.customer_id = 1;",
+            "row_count": 2,
+            "matched": true,
+            "detail": {
+              "actual": [
+                [
+                  1,
+                  154.99
+                ],
+                [
+                  2,
+                  139.0
+                ]
+              ],
+              "expected": [
+                [
+                  1,
+                  154.99
+                ],
+                [
+                  2,
+                  139.0
+                ]
+              ]
+            }
+          }
+        ]
+      },
+      "keywords": {
+        "available": false,
+        "passed": true,
+        "missing": [],
+        "violated": []
+      }
+    },
+    {
+      "question": "C2",
+      "calls": 1,
+      "answer": "\n\nYes, the query **will use the index on order_date**.\n\nLooking at the execution plan, here's what it shows:\n\n**Key Plan Details:**\n\n| Node | Details |\n|------|---------|\n| **Plan Type** | `Index Scan` |\n| **Index Name** | `idx_orders_order_date` |\n| **Scan Direction** | `Backward` |\n| **Index Cond** | `(order_date >= (CURRENT_DATE - '30 days'::interval))` |\n\n**What this means:**\n\n1. **Index is being used**: The planner selected an `Index Scan` rather than a sequential or random scan\n2. **Direction matches ORDER BY**: The \"Backward\" scan direction is optimal for your `ORDER BY order_date DESC` clause \u2013 it reads the index from newest to oldest without needing to reverse the result set\n3. **Filtering at the index level**: The WHERE clause filter is applied directly within the index scan (`Order_date >= ...`)\n4. **Efficient retrieval**: The query needs to examine only ~247 rows (Plan Rows: 247) before reaching the LIMIT 20\n\nThe plan confirms the index on `order_date` is being leveraged effectively for both the filtering condition and the sort order.",
+      "verdict": "correct",
+      "basis": "keyword check",
+      "flags": [],
+      "cosine": 0.802,
+      "sql_check": null,
+      "keywords": {
+        "available": true,
+        "passed": true,
+        "missing": [],
+        "violated": []
+      }
+    }
+  ]
+}
