@@ -36,6 +36,64 @@ Deliberately absent: no agent framework, no ReAct prompting, no retries, no mult
 
 **Data source.** A PostgreSQL 17 database in Docker with six tables — `customers`, `orders`, `order_items`, `products`, `categories`, `payments` — seeded with 8 customers, 12 orders, 17 order items and 12 payments. Five foreign keys connect them. Eighteen Markdown documents form the RAG knowledge base.
 
+**Schema.**
+
+```mermaid
+erDiagram
+    CUSTOMERS ||--o{ ORDERS : places
+    ORDERS ||--o{ ORDER_ITEMS : contains
+    PRODUCTS ||--o{ ORDER_ITEMS : "ordered as"
+    CATEGORIES ||--o{ PRODUCTS : groups
+    ORDERS ||--o{ PAYMENTS : "settled by"
+
+    CUSTOMERS {
+        bigint customer_id PK
+        varchar full_name
+        varchar email UK
+        timestamp created_at
+        boolean is_active
+    }
+
+    CATEGORIES {
+        bigint category_id PK
+        varchar category_name UK
+        text description
+    }
+
+    PRODUCTS {
+        bigint product_id PK
+        bigint category_id FK
+        varchar product_name
+        numeric current_price
+        boolean is_active
+    }
+
+    ORDERS {
+        bigint order_id PK
+        bigint customer_id FK
+        timestamp order_date
+        varchar status
+    }
+
+    ORDER_ITEMS {
+        bigint order_item_id PK
+        bigint order_id FK
+        bigint product_id FK
+        integer quantity
+        numeric unit_price_at_purchase
+    }
+
+    PAYMENTS {
+        bigint payment_id PK
+        bigint order_id FK
+        timestamp payment_date
+        numeric amount
+        varchar payment_status
+    }
+```
+
+`status` is constrained to `pending, processing, completed, cancelled`; `payment_status` to `paid, pending, failed, refunded`. All five foreign keys are `ON DELETE NO ACTION`, so deleting a parent row with children is blocked rather than cascaded — the point Query 4 below gets wrong.
+
 **Setup.**
 
 ```bash
